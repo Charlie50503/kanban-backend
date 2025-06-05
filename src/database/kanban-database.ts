@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { DbTask, DbColumn, DbProject } from '../types/kanban.types';
 
 export class KanbanDatabase {
-  private db: Database.Database;
+  public db: Database.Database; // 改為 public 讓 service 可以存取
 
   constructor(dbPath: string = 'kanban.db') {
     this.db = new Database(dbPath);
@@ -40,6 +40,7 @@ export class KanbanDatabase {
         due_date TEXT,
         priority TEXT CHECK(priority IN ('low', 'medium', 'high')),
         created_at TEXT DEFAULT (datetime('now')),
+        order_index INTEGER DEFAULT 0,
         FOREIGN KEY (column_id) REFERENCES columns(id) ON DELETE CASCADE
       );
       
@@ -58,7 +59,7 @@ export class KanbanDatabase {
     `);
   }
 
-  // 專案操作
+  // === 專案操作 ===
   createProject(project: DbProject): Database.RunResult {
     const stmt = this.db.prepare(`
       INSERT INTO projects (id, name, description, created_at) 
@@ -67,12 +68,46 @@ export class KanbanDatabase {
     return stmt.run(project.id, project.name, project.description, project.created_at);
   }
 
+  getAllProjects(): DbProject[] {
+    const stmt = this.db.prepare('SELECT * FROM projects ORDER BY created_at DESC');
+    return stmt.all() as DbProject[];
+  }
+
   getProject(projectId: string): DbProject | undefined {
     const stmt = this.db.prepare('SELECT * FROM projects WHERE id = ?');
     return stmt.get(projectId) as DbProject | undefined;
   }
 
-  // 欄位操作
+  updateProject(projectId: string, updates: { name?: string; description?: string }): boolean {
+    const fields = [];
+    const values = [];
+    
+    if (updates.name !== undefined) {
+      fields.push('name = ?');
+      values.push(updates.name);
+    }
+    
+    if (updates.description !== undefined) {
+      fields.push('description = ?');
+      values.push(updates.description);
+    }
+    
+    if (fields.length === 0) return false;
+    
+    values.push(projectId);
+    
+    const stmt = this.db.prepare(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`);
+    const result = stmt.run(...values);
+    return result.changes > 0;
+  }
+
+  deleteProject(projectId: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM projects WHERE id = ?');
+    const result = stmt.run(projectId);
+    return result.changes > 0;
+  }
+
+  // === 欄位操作 ===
   createColumn(column: Omit<DbColumn, 'project_id'>, projectId: string): Database.RunResult {
     const stmt = this.db.prepare(`
       INSERT INTO columns (id, project_id, title, color, order_index) 
@@ -90,7 +125,36 @@ export class KanbanDatabase {
     return stmt.all(projectId) as DbColumn[];
   }
 
-  // 任務操作
+  updateColumn(columnId: string, updates: { title?: string; color?: string }): boolean {
+    const fields = [];
+    const values = [];
+    
+    if (updates.title !== undefined) {
+      fields.push('title = ?');
+      values.push(updates.title);
+    }
+    
+    if (updates.color !== undefined) {
+      fields.push('color = ?');
+      values.push(updates.color);
+    }
+    
+    if (fields.length === 0) return false;
+    
+    values.push(columnId);
+    
+    const stmt = this.db.prepare(`UPDATE columns SET ${fields.join(', ')} WHERE id = ?`);
+    const result = stmt.run(...values);
+    return result.changes > 0;
+  }
+
+  deleteColumn(columnId: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM columns WHERE id = ?');
+    const result = stmt.run(columnId);
+    return result.changes > 0;
+  }
+
+  // === 任務操作 ===
   createTask(task: Omit<DbTask, 'created_at' | 'tags'>): Database.RunResult {
     const stmt = this.db.prepare(`
       INSERT INTO tasks (id, column_id, title, description, assignee, due_date, priority) 
@@ -109,12 +173,46 @@ export class KanbanDatabase {
       LEFT JOIN task_tags tt ON t.id = tt.task_id
       WHERE t.column_id = ?
       GROUP BY t.id
-      ORDER BY t.created_at
+      ORDER BY t.order_index, t.created_at
     `);
     return stmt.all(columnId) as DbTask[];
   }
 
-  // 標籤操作
+  updateTask(taskId: string, updates: any): boolean {
+    const fields:any[] = [];
+    const values = [];
+    
+    Object.entries(updates).forEach(([key, value]) => {
+      fields.push(`${key} = ?`);
+      values.push(value);
+    });
+    
+    if (fields.length === 0) return false;
+    
+    values.push(taskId);
+    
+    const stmt = this.db.prepare(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ?`);
+    const result = stmt.run(...values);
+    return result.changes > 0;
+  }
+
+  deleteTask(taskId: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM tasks WHERE id = ?');
+    const result = stmt.run(taskId);
+    return result.changes > 0;
+  }
+
+  moveTask(taskId: string, newColumnId: string): Database.RunResult {
+    const stmt = this.db.prepare('UPDATE tasks SET column_id = ? WHERE id = ?');
+    return stmt.run(newColumnId, taskId);
+  }
+
+  updateTaskOrder(taskId: string, order: number): void {
+    const stmt = this.db.prepare('UPDATE tasks SET order_index = ? WHERE id = ?');
+    stmt.run(order, taskId);
+  }
+
+  // === 標籤操作 ===
   addTaskTags(taskId: string, tags: string[]): void {
     const stmt = this.db.prepare('INSERT INTO task_tags (task_id, tag_name) VALUES (?, ?)');
     const transaction = this.db.transaction(() => {
@@ -125,9 +223,9 @@ export class KanbanDatabase {
     transaction();
   }
 
-  moveTask(taskId: string, newColumnId: string): Database.RunResult {
-    const stmt = this.db.prepare('UPDATE tasks SET column_id = ? WHERE id = ?');
-    return stmt.run(newColumnId, taskId);
+  deleteTaskTags(taskId: string): void {
+    const stmt = this.db.prepare('DELETE FROM task_tags WHERE task_id = ?');
+    stmt.run(taskId);
   }
 
   close(): void {
