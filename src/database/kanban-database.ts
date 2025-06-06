@@ -292,16 +292,8 @@ export class KanbanDatabase {
   addTaskTags(taskId: string, tags: string[]): void {
     const stmt = this.db.prepare('INSERT OR IGNORE INTO task_tags (task_id, tag_name) VALUES (?, ?)');
     
-    // 使用 transaction 來確保原子性
-    this.db.exec('BEGIN TRANSACTION');
-    try {
-      for (const tag of tags) {
-        stmt.run(taskId, tag);
-      }
-      this.db.exec('COMMIT');
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
+    for (const tag of tags) {
+      stmt.run(taskId, tag);
     }
   }
 
@@ -380,6 +372,30 @@ export class KanbanDatabase {
       created_at: row.created_at as string,
       tags: row.tags as string
     }));
+  }
+
+  getTask(taskId: string): DbTask | undefined {
+    const stmt = this.db.prepare(`
+      SELECT t.*, GROUP_CONCAT(tt.tag_name) as tags
+      FROM tasks t
+      LEFT JOIN task_tags tt ON t.id = tt.task_id
+      WHERE t.id = ?
+      GROUP BY t.id
+    `);
+    const result = stmt.get(taskId);
+    if (!result) return undefined;
+    return {
+      id: result.id as string,
+      column_id: result.column_id as string,
+      title: result.title as string,
+      description: result.description as string,
+      assignee: result.assignee as string,
+      due_date: result.due_date as string,
+      priority: result.priority as "low" | "medium" | "high",
+      order_index: result.order_index as number || 0,
+      created_at: result.created_at as string,
+      tags: result.tags as string
+    };
   }
 
   close(): void {

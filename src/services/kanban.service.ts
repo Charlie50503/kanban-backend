@@ -130,7 +130,8 @@ export class KanbanService {
       description: task.description,
       assignee: task.assignee,
       due_date: task.dueDate,
-      priority: task.priority
+      priority: task.priority,
+      order_index: 0
     });
 
     if (task.tags.length > 0) {
@@ -142,6 +143,12 @@ export class KanbanService {
 
   updateTask(taskId: string, updates: Partial<Task>): boolean {
     try {
+      // 檢查任務是否存在
+      const task = this.db.getTask(taskId);
+      if (!task) {
+        return false;
+      }
+
       this.db.db.exec('BEGIN TRANSACTION');
       
       // 更新任務基本資料
