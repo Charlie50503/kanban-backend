@@ -216,6 +216,19 @@ export class KanbanService {
     }
   }
 
+  reorderColumns(projectId: string, columnIds: string[]): void {
+    try {
+      this.db.db.exec('BEGIN TRANSACTION');
+      columnIds.forEach((columnId, index) => {
+        this.db.updateColumnOrder(columnId, index);
+      });
+      this.db.db.exec('COMMIT');
+    } catch (error) {
+      this.db.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   private generateId(): string {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
   }

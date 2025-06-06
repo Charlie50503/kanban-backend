@@ -512,6 +512,46 @@ app.patch('/api/columns/:columnId/tasks/reorder', (req, res) => {
 
 /**
  * @swagger
+ * /api/projects/{projectId}/columns/reorder:
+ *   patch:
+ *     summary: 重新排序專案中的欄位
+ *     description: 調整專案中欄位的順序
+ *     tags: [Columns]
+ *     parameters:
+ *       - in: path
+ *         name: projectId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               columnIds:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: 重新排序後的欄位 ID 陣列
+ *     responses:
+ *       200:
+ *         description: 欄位排序更新成功
+ */
+app.patch('/api/projects/:projectId/columns/reorder', (req, res) => {
+  try {
+    const { columnIds } = req.body;
+    kanbanService.reorderColumns(req.params.projectId, columnIds);
+    res.json({ success: true, message: '欄位排序更新成功' });
+  } catch (error) {
+    console.error('Reorder columns error:', error);
+    res.status(500).json({ error: '更新欄位排序失敗' });
+  }
+});
+
+/**
+ * @swagger
  * /:
  *   get:
  *     summary: API 健康檢查

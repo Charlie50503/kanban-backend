@@ -209,6 +209,29 @@ export class KanbanDatabase {
     return result.changes > 0;
   }
 
+  updateColumnOrder(columnId: string, order: number): void {
+    const stmt = this.db.prepare('UPDATE columns SET order_index = ? WHERE id = ?');
+    stmt.run(order, columnId);
+  }
+
+  /**
+   * 批次更新欄位順序
+   */
+  updateColumnsOrder(columnOrders: { columnId: string; order: number }[]): void {
+    const stmt = this.db.prepare('UPDATE columns SET order_index = ? WHERE id = ?');
+    
+    this.db.exec('BEGIN TRANSACTION');
+    try {
+      for (const { columnId, order } of columnOrders) {
+        stmt.run(order, columnId);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   // === 任務操作 ===
   createTask(task: Omit<DbTask, 'created_at' | 'tags'>): { changes: number; lastInsertRowid: number } {
     const stmt = this.db.prepare(`
