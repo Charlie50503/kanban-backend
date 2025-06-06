@@ -1,12 +1,12 @@
 // src/database/kanban-database.ts
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import { DbTask, DbColumn, DbProject } from '../types/kanban.types';
 
 export class KanbanDatabase {
-  public db: Database.Database; // 改為 public 讓 service 可以存取
+  public db: DatabaseSync;
 
   constructor(dbPath: string = 'kanban.db') {
-    this.db = new Database(dbPath);
+    this.db = new DatabaseSync(dbPath);
     this.initTables();
   }
 
@@ -56,31 +56,75 @@ export class KanbanDatabase {
       CREATE INDEX IF NOT EXISTS idx_columns_project_id ON columns(project_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_column_id ON tasks(column_id);
       CREATE INDEX IF NOT EXISTS idx_task_tags_task_id ON task_tags(task_id);
+
+      -- 遷移：為現有的 tasks 表添加 order_index 欄位
+      PRAGMA foreign_keys = OFF;
+      BEGIN TRANSACTION;
+      
+      -- 檢查 order_index 欄位是否存在
+      SELECT CASE 
+        WHEN NOT EXISTS (
+          SELECT 1 FROM pragma_table_info('tasks') WHERE name='order_index'
+        ) THEN
+          'ALTER TABLE tasks ADD COLUMN order_index INTEGER DEFAULT 0;'
+        ELSE
+          'SELECT 1;'
+      END;
+      
+      -- 更新現有記錄的 order_index
+      UPDATE tasks 
+      SET order_index = (
+        SELECT COUNT(*) 
+        FROM tasks t2 
+        WHERE t2.column_id = tasks.column_id 
+        AND t2.created_at <= tasks.created_at
+      ) - 1
+      WHERE order_index = 0;
+      
+      COMMIT;
+      PRAGMA foreign_keys = ON;
     `);
   }
 
   // === 專案操作 ===
-  createProject(project: DbProject): Database.RunResult {
+  createProject(project: DbProject): { changes: number ; lastInsertRowid: number } {
     const stmt = this.db.prepare(`
       INSERT INTO projects (id, name, description, created_at) 
       VALUES (?, ?, ?, ?)
     `);
-    return stmt.run(project.id, project.name, project.description, project.created_at);
+    const result = stmt.run(project.id, project.name, project.description, project.created_at);
+    return {
+      changes: Number(result.changes),
+      lastInsertRowid: Number(result.lastInsertRowid)
+    };
   }
 
   getAllProjects(): DbProject[] {
     const stmt = this.db.prepare('SELECT * FROM projects ORDER BY created_at DESC');
-    return stmt.all() as DbProject[];
+    const results = stmt.all();
+    return results.map(row => ({
+      id: row.id as string,
+      name: row.name as string,
+      description: row.description as string,
+      created_at: row.created_at as string
+    }));
   }
 
   getProject(projectId: string): DbProject | undefined {
     const stmt = this.db.prepare('SELECT * FROM projects WHERE id = ?');
-    return stmt.get(projectId) as DbProject | undefined;
+    const result = stmt.get(projectId);
+    if (!result) return undefined;
+    return {
+      id: result.id as string,
+      name: result.name as string,
+      description: result.description as string,
+      created_at: result.created_at as string
+    };
   }
 
   updateProject(projectId: string, updates: { name?: string; description?: string }): boolean {
-    const fields = [];
-    const values = [];
+    const fields: string[] = [];
+    const values: any[] = [];
     
     if (updates.name !== undefined) {
       fields.push('name = ?');
@@ -108,12 +152,16 @@ export class KanbanDatabase {
   }
 
   // === 欄位操作 ===
-  createColumn(column: Omit<DbColumn, 'project_id'>, projectId: string): Database.RunResult {
+  createColumn(column: Omit<DbColumn, 'project_id'>, projectId: string): { changes: number; lastInsertRowid: number } {
     const stmt = this.db.prepare(`
       INSERT INTO columns (id, project_id, title, color, order_index) 
       VALUES (?, ?, ?, ?, ?)
     `);
-    return stmt.run(column.id, projectId, column.title, column.color, column.order_index);
+    const result = stmt.run(column.id, projectId, column.title, column.color, column.order_index);
+    return {
+      changes: Number(result.changes),
+      lastInsertRowid: Number(result.lastInsertRowid)
+    };
   }
 
   getColumnsByProject(projectId: string): DbColumn[] {
@@ -122,12 +170,19 @@ export class KanbanDatabase {
       WHERE project_id = ? 
       ORDER BY order_index
     `);
-    return stmt.all(projectId) as DbColumn[];
+    const results = stmt.all(projectId);
+    return results.map(row => ({
+      id: row.id as string,
+      project_id: row.project_id as string,
+      title: row.title as string,
+      color: row.color as string,
+      order_index: row.order_index as number
+    }));
   }
 
   updateColumn(columnId: string, updates: { title?: string; color?: string }): boolean {
-    const fields = [];
-    const values = [];
+    const fields: string[] = [];
+    const values: any[] = [];
     
     if (updates.title !== undefined) {
       fields.push('title = ?');
@@ -155,15 +210,20 @@ export class KanbanDatabase {
   }
 
   // === 任務操作 ===
-  createTask(task: Omit<DbTask, 'created_at' | 'tags'>): Database.RunResult {
+  createTask(task: Omit<DbTask, 'created_at' | 'tags'>): { changes: number; lastInsertRowid: number } {
     const stmt = this.db.prepare(`
-      INSERT INTO tasks (id, column_id, title, description, assignee, due_date, priority) 
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, column_id, title, description, assignee, due_date, priority, order_index) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(order_index), -1) + 1 FROM tasks WHERE column_id = ?))
     `);
-    return stmt.run(
+    const result = stmt.run(
       task.id, task.column_id, task.title, 
-      task.description, task.assignee, task.due_date, task.priority
+      task.description, task.assignee, task.due_date, task.priority,
+      task.column_id
     );
+    return {
+      changes: Number(result.changes),
+      lastInsertRowid: Number(result.lastInsertRowid)
+    };
   }
 
   getTasksByColumn(columnId: string): DbTask[] {
@@ -173,14 +233,26 @@ export class KanbanDatabase {
       LEFT JOIN task_tags tt ON t.id = tt.task_id
       WHERE t.column_id = ?
       GROUP BY t.id
-      ORDER BY t.order_index, t.created_at
+      ORDER BY COALESCE(t.order_index, 0), t.created_at
     `);
-    return stmt.all(columnId) as DbTask[];
+    const results = stmt.all(columnId);
+    return results.map(row => ({
+      id: row.id as string,
+      column_id: row.column_id as string,
+      title: row.title as string,
+      description: row.description as string,
+      assignee: row.assignee as string,
+      due_date: row.due_date as string,
+      priority: row.priority as "low" | "medium" | "high",
+      order_index: row.order_index as number || 0,
+      created_at: row.created_at as string,
+      tags: row.tags as string
+    }));
   }
 
-  updateTask(taskId: string, updates: any): boolean {
-    const fields:any[] = [];
-    const values = [];
+  updateTask(taskId: string, updates: Record<string, any>): boolean {
+    const fields: string[] = [];
+    const values: any[] = [];
     
     Object.entries(updates).forEach(([key, value]) => {
       fields.push(`${key} = ?`);
@@ -202,9 +274,13 @@ export class KanbanDatabase {
     return result.changes > 0;
   }
 
-  moveTask(taskId: string, newColumnId: string): Database.RunResult {
+  moveTask(taskId: string, newColumnId: string): { changes: number; lastInsertRowid: number } {
     const stmt = this.db.prepare('UPDATE tasks SET column_id = ? WHERE id = ?');
-    return stmt.run(newColumnId, taskId);
+    const result = stmt.run(newColumnId, taskId);
+    return {
+      changes: Number(result.changes),
+      lastInsertRowid: Number(result.lastInsertRowid)
+    };
   }
 
   updateTaskOrder(taskId: string, order: number): void {
@@ -214,18 +290,96 @@ export class KanbanDatabase {
 
   // === 標籤操作 ===
   addTaskTags(taskId: string, tags: string[]): void {
-    const stmt = this.db.prepare('INSERT INTO task_tags (task_id, tag_name) VALUES (?, ?)');
-    const transaction = this.db.transaction(() => {
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO task_tags (task_id, tag_name) VALUES (?, ?)');
+    
+    // 使用 transaction 來確保原子性
+    this.db.exec('BEGIN TRANSACTION');
+    try {
       for (const tag of tags) {
         stmt.run(taskId, tag);
       }
-    });
-    transaction();
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   deleteTaskTags(taskId: string): void {
     const stmt = this.db.prepare('DELETE FROM task_tags WHERE task_id = ?');
     stmt.run(taskId);
+  }
+
+  // === 進階功能 ===
+  
+  /**
+   * 取得專案的完整資料，包含所有欄位和任務
+   */
+  getProjectWithDetails(projectId: string): DbProject & { 
+    columns: (DbColumn & { tasks: DbTask[] })[] 
+  } | undefined {
+    const project = this.getProject(projectId);
+    if (!project) return undefined;
+
+    const columns = this.getColumnsByProject(projectId);
+    const columnsWithTasks = columns.map(column => ({
+      ...column,
+      tasks: this.getTasksByColumn(column.id)
+    }));
+
+    return {
+      ...project,
+      columns: columnsWithTasks
+    };
+  }
+
+  /**
+   * 批次更新任務順序
+   */
+  updateTasksOrder(taskOrders: { taskId: string; order: number }[]): void {
+    const stmt = this.db.prepare('UPDATE tasks SET order_index = ? WHERE id = ?');
+    
+    this.db.exec('BEGIN TRANSACTION');
+    try {
+      for (const { taskId, order } of taskOrders) {
+        stmt.run(order, taskId);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * 搜尋任務
+   */
+  searchTasks(projectId: string, searchTerm: string): DbTask[] {
+    const stmt = this.db.prepare(`
+      SELECT t.*, GROUP_CONCAT(tt.tag_name) as tags
+      FROM tasks t
+      LEFT JOIN task_tags tt ON t.id = tt.task_id
+      LEFT JOIN columns c ON t.column_id = c.id
+      WHERE c.project_id = ? 
+        AND (t.title LIKE ? OR t.description LIKE ? OR t.assignee LIKE ?)
+      GROUP BY t.id
+      ORDER BY t.created_at DESC
+    `);
+    
+    const searchPattern = `%${searchTerm}%`;
+    const results = stmt.all(projectId, searchPattern, searchPattern, searchPattern);
+    return results.map(row => ({
+      id: row.id as string,
+      column_id: row.column_id as string,
+      title: row.title as string,
+      description: row.description as string,
+      assignee: row.assignee as string,
+      due_date: row.due_date as string,
+      priority: row.priority as "low" | "medium" | "high",
+      order_index: row.order_index as number,
+      created_at: row.created_at as string,
+      tags: row.tags as string
+    }));
   }
 
   close(): void {

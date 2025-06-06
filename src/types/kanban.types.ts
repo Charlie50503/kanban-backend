@@ -39,6 +39,7 @@ export interface DbTask {
   priority: 'low' | 'medium' | 'high';
   created_at: string;
   tags?: string; // GROUP_CONCAT 結果
+  order_index: number;
 }
 
 export interface DbColumn {

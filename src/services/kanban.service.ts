@@ -141,8 +141,9 @@ export class KanbanService {
   }
 
   updateTask(taskId: string, updates: Partial<Task>): boolean {
-    // 使用正確的 transaction 存取方式
-    const transaction = this.db.db.transaction(() => {
+    try {
+      this.db.db.exec('BEGIN TRANSACTION');
+      
       // 更新任務基本資料
       if (Object.keys(updates).some(key => key !== 'tags')) {
         const taskUpdates: any = {};
@@ -162,12 +163,11 @@ export class KanbanService {
           this.db.addTaskTags(taskId, updates.tags);
         }
       }
-    });
 
-    try {
-      transaction();
+      this.db.db.exec('COMMIT');
       return true;
     } catch (error) {
+      this.db.db.exec('ROLLBACK');
       console.error('Update task error:', error);
       return false;
     }
@@ -197,13 +197,16 @@ export class KanbanService {
   }
 
   reorderTasks(columnId: string, taskIds: string[]): void {
-    const transaction = this.db.db.transaction(() => {
+    try {
+      this.db.db.exec('BEGIN TRANSACTION');
       taskIds.forEach((taskId, index) => {
         this.db.updateTaskOrder(taskId, index);
       });
-    });
-    
-    transaction();
+      this.db.db.exec('COMMIT');
+    } catch (error) {
+      this.db.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   private generateId(): string {
